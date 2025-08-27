@@ -1,0 +1,58 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: docker-run
+  annotations:
+    description: "Task to run Docker containers for testing"
+spec:
+  description: |
+    Runs a Docker container with specified parameters for testing purposes.
+
+  params:
+    - name: image
+      description: "Docker image to run"
+    - name: platform
+      description: "Platform to run the container on"
+      default: "linux/amd64"
+    - name: command
+      description: "Command to run in the container"
+      default: "echo 'No command specified'"
+    - name: timeout
+      description: "Timeout for the container run"
+      default: "5m"
+
+  steps:
+    - name: docker-run
+      image: docker:latest
+      script: |
+        #!/usr/bin/env sh
+        set -euo pipefail
+
+        echo "Running Docker container test..."
+        echo "Image: $(params.image)"
+        echo "Platform: $(params.platform)"
+        echo "Command: $(params.command)"
+
+        # Run the container with timeout
+        timeout $(params.timeout) docker run \
+          --rm \
+          --platform $(params.platform) \
+          $(params.image) \
+          sh -c "$(params.command)"
+
+        echo "Container test completed successfully"
+
+      env:
+        - name: DOCKER_HOST
+          value: "unix:///var/run/docker.sock"
+
+      volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+
+  volumes:
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
+        type: Socket

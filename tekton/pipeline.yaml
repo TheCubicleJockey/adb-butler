@@ -1,0 +1,192 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: adb-butler-pipeline
+  annotations:
+    description: >-
+      Pipeline for building and testing ADB Butler Docker image
+spec:
+  description: |
+    Pipeline that builds, tests, and optionally deploys the ADB Butler Docker image
+    with support for multiple architectures (x86_64 and ARM64).
+
+  params:
+    - name: git-url
+      description: "Git repository URL"
+      default: "https://github.com/nicholashaven/adb-butler.git"
+    - name: git-revision
+      description: "Git revision to checkout"
+      default: "main"
+    - name: image-name
+      description: "Docker image name"
+      default: "adb-butler"
+    - name: image-tag
+      description: "Docker image tag"
+      default: "latest"
+    - name: registry-url
+      description: "Docker registry URL"
+      default: "docker.io"
+    - name: registry-secret
+      description: "Docker registry secret name"
+      default: "docker-registry-secret"
+    - name: push-image
+      description: "Whether to push the image to registry"
+      default: "false"
+      type: string
+
+  workspaces:
+    - name: shared-workspace
+      description: "Shared workspace for pipeline tasks"
+
+  tasks:
+    # Task 1: Clone the repository
+    - name: fetch-repository
+      taskRef:
+        name: git-clone
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: subdirectory
+          value: ""
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    # Task 2: Lint Dockerfile
+    - name: lint-dockerfile
+      runAfter: ["fetch-repository"]
+      taskRef:
+        name: hadolint
+      params:
+        - name: dockerfile
+          value: "Dockerfile"
+        - name: format
+          value: "sarif"
+        - name: output-file
+          value: "hadolint-result.sarif"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    # Task 3: Build multi-architecture Docker image
+    - name: build-image
+      runAfter: ["lint-dockerfile"]
+      taskRef:
+        name: kaniko
+      params:
+        - name: IMAGE
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: PLATFORM
+          value: "linux/amd64,linux/arm64"
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: PUSH
+          value: "$(params.push-image)"
+        - name: BUILD_ARGS
+          value: |
+            VCS_REF=$(tasks.fetch-repository.results.commit)
+            IMAGE_VERSION=$(params.image-tag)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: cache
+          workspace: docker-cache
+
+    # Task 4: Test x86_64 image
+    - name: test-amd64
+      runAfter: ["build-image"]
+      taskRef:
+        name: docker-run
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: platform
+          value: "linux/amd64"
+        - name: command
+          value: |
+            sh -c "
+              echo 'Testing x86_64 image...'
+              echo 'Architecture: ' \$(uname -m)
+              echo 'Node.js: ' \$(node --version)
+              echo 'npm: ' \$(npm --version)
+              echo 'ADB: ' \$(adb version 2>/dev/null || echo 'Not available')
+            "
+
+    # Task 5: Test ARM64 image
+    - name: test-arm64
+      runAfter: ["build-image"]
+      taskRef:
+        name: docker-run
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: platform
+          value: "linux/arm64"
+        - name: command
+          value: |
+            sh -c "
+              echo 'Testing ARM64 image...'
+              echo 'Architecture: ' \$(uname -m)
+              echo 'Node.js: ' \$(node --version)
+              echo 'npm: ' \$(npm --version)
+              echo 'ADB: ' $(which adb 2>/dev/null || echo 'Not available on ARM64')
+            "
+
+    # Task 6: Security scan (optional)
+    - name: security-scan
+      runAfter: ["build-image"]
+      taskRef:
+        name: trivy-scanner
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: format
+          value: "sarif"
+        - name: output
+          value: "trivy-results.sarif"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    # Task 7: Push to registry (conditional)
+    - name: push-to-registry
+      runAfter: ["test-amd64", "test-arm64"]
+      when:
+        - input: "$(params.push-image)"
+          operator: in
+          values: ["true", "True", "TRUE"]
+      taskRef:
+        name: kaniko
+      params:
+        - name: IMAGE
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: PLATFORM
+          value: "linux/amd64,linux/arm64"
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: PUSH
+          value: "true"
+        - name: BUILD_ARGS
+          value: |
+            VCS_REF=$(tasks.fetch-repository.results.commit)
+            IMAGE_VERSION=$(params.image-tag)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: cache
+          workspace: docker-cache
+      serviceAccountName: docker-registry-sa

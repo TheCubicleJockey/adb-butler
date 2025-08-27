@@ -1,0 +1,276 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: adb-butler-pipeline-optimized
+  annotations:
+    description: >-
+      Optimized pipeline for building and testing ADB Butler Docker image
+spec:
+  description: |
+    Optimized pipeline that builds, tests, and optionally deploys the ADB Butler Docker image
+    with support for multiple architectures (x86_64 and ARM64). Features parallel execution,
+    conditional tasks, and improved caching.
+
+  params:
+    - name: git-url
+      description: "Git repository URL"
+      default: "https://github.com/nicholashaven/adb-butler.git"
+    - name: git-revision
+      description: "Git revision to checkout"
+      default: "main"
+    - name: image-name
+      description: "Docker image name"
+      default: "adb-butler"
+    - name: image-tag
+      description: "Docker image tag"
+      default: "latest"
+    - name: registry-url
+      description: "Docker registry URL"
+      default: "docker.io"
+    - name: registry-secret
+      description: "Docker registry secret name"
+      default: "docker-registry-secret"
+    - name: push-image
+      description: "Whether to push the image to registry"
+      default: "false"
+      type: string
+    - name: skip-tests
+      description: "Skip running tests"
+      default: "false"
+      type: string
+    - name: skip-security-scan
+      description: "Skip security scanning"
+      default: "false"
+      type: string
+
+  workspaces:
+    - name: shared-workspace
+      description: "Shared workspace for pipeline tasks"
+    - name: docker-cache
+      description: "Docker layer cache workspace"
+    - name: test-results
+      description: "Test results and artifacts workspace"
+
+  tasks:
+    # Task 1: Clone the repository
+    - name: fetch-repository
+      taskRef:
+        name: git-clone
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: subdirectory
+          value: ""
+        - name: deleteExisting
+          value: "true"
+        - name: depth
+          value: "1"  # Shallow clone for faster checkout
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    # Task 2: Lint Dockerfile (parallel with build prep)
+    - name: lint-dockerfile
+      runAfter: ["fetch-repository"]
+      taskRef:
+        name: hadolint
+      params:
+        - name: dockerfile
+          value: "Dockerfile"
+        - name: format
+          value: "sarif"
+        - name: output-file
+          value: "hadolint-result.sarif"
+        - name: fail-threshold
+          value: "warning"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    # Task 3: Build multi-architecture Docker image
+    - name: build-image
+      runAfter: ["fetch-repository"]
+      taskRef:
+        name: kaniko
+      params:
+        - name: IMAGE
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: PLATFORM
+          value: "linux/amd64,linux/arm64"
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: PUSH
+          value: "$(params.push-image)"
+        - name: BUILD_ARGS
+          value: |
+            VCS_REF=$(tasks.fetch-repository.results.commit)
+            IMAGE_VERSION=$(params.image-tag)
+            BUILDKIT_INLINE_CACHE=1
+        - name: CACHE_REPO
+          value: "$(params.registry-url)/$(params.image-name)/cache"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: cache
+          workspace: docker-cache
+
+    # Task 4: Parallel testing tasks (only if not skipped)
+    - name: test-amd64
+      runAfter: ["build-image"]
+      when:
+        - input: "$(params.skip-tests)"
+          operator: in
+          values: ["false", "False", "FALSE"]
+      taskRef:
+        name: docker-run
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: platform
+          value: "linux/amd64"
+        - name: command
+          value: |
+            sh -c "
+              echo 'Testing x86_64 image...'
+              echo 'Architecture: ' \$(uname -m)
+              echo 'Node.js: ' \$(node --version)
+              echo 'npm: ' \$(npm --version)
+              echo 'ADB: ' \$(adb version 2>/dev/null || echo 'Not available')
+              echo 'Test completed successfully' > /tmp/test-result.txt
+            "
+        - name: timeout
+          value: "3m"
+      workspaces:
+        - name: test-output
+          workspace: test-results
+
+    # Task 5: Test ARM64 image (parallel with AMD64)
+    - name: test-arm64
+      runAfter: ["build-image"]
+      when:
+        - input: "$(params.skip-tests)"
+          operator: in
+          values: ["false", "False", "FALSE"]
+      taskRef:
+        name: docker-run
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: platform
+          value: "linux/arm64"
+        - name: command
+          value: |
+            sh -c "
+              echo 'Testing ARM64 image...'
+              echo 'Architecture: ' \$(uname -m)
+              echo 'Node.js: ' \$(node --version)
+              echo 'npm: ' \$(npm --version)
+              echo 'ADB: ' $(which adb 2>/dev/null || echo 'Not available on ARM64')
+              echo 'Test completed successfully' > /tmp/test-result.txt
+            "
+        - name: timeout
+          value: "3m"
+      workspaces:
+        - name: test-output
+          workspace: test-results
+
+    # Task 6: Security scan (parallel with tests, conditional)
+    - name: security-scan
+      runAfter: ["build-image"]
+      when:
+        - input: "$(params.skip-security-scan)"
+          operator: in
+          values: ["false", "False", "FALSE"]
+      taskRef:
+        name: trivy-scanner
+      params:
+        - name: image
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: format
+          value: "sarif"
+        - name: output
+          value: "trivy-results.sarif"
+        - name: severity
+          value: "CRITICAL,HIGH"
+        - name: exit-code
+          value: "0"  # Don't fail pipeline on vulnerabilities
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    # Task 7: Collect test results
+    - name: collect-test-results
+      runAfter: ["test-amd64", "test-arm64"]
+      when:
+        - input: "$(params.skip-tests)"
+          operator: in
+          values: ["false", "False", "FALSE"]
+      taskRef:
+        name: collect-results
+      params:
+        - name: test-results-dir
+          value: "test-results"
+      workspaces:
+        - name: source
+          workspace: test-results
+
+    # Task 8: Push to registry (conditional, runs after all tests pass)
+    - name: push-to-registry
+      runAfter: ["collect-test-results", "security-scan"]
+      when:
+        - input: "$(params.push-image)"
+          operator: in
+          values: ["true", "True", "TRUE"]
+      taskRef:
+        name: kaniko
+      params:
+        - name: IMAGE
+          value: >-
+            $(params.registry-url)/$(params.image-name):$(params.image-tag)
+        - name: PLATFORM
+          value: "linux/amd64,linux/arm64"
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: PUSH
+          value: "true"
+        - name: BUILD_ARGS
+          value: |
+            VCS_REF=$(tasks.fetch-repository.results.commit)
+            IMAGE_VERSION=$(params.image-tag)
+        - name: CACHE_REPO
+          value: "$(params.registry-url)/$(params.image-name)/cache"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: cache
+          workspace: docker-cache
+      serviceAccountName: docker-registry-sa
+
+    # Task 9: Generate pipeline report
+    - name: generate-report
+      runAfter: ["collect-test-results", "security-scan", "push-to-registry"]
+      taskRef:
+        name: generate-report
+      params:
+        - name: pipeline-name
+          value: "adb-butler-pipeline"
+        - name: image-name
+          value: "$(params.image-name):$(params.image-tag)"
+        - name: git-commit
+          value: "$(tasks.fetch-repository.results.commit)"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: test-results
+          workspace: test-results

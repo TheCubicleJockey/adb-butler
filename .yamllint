@@ -1,0 +1,17 @@
+extends: default
+
+rules:
+  # 80 chars should be enough, but don't fail if a line is longer
+  line-length: disable
+
+  # Accept both .yml and .yaml files
+  document-start: disable
+
+  # Allow trailing spaces in some cases
+  trailing-spaces: enable
+
+  # Allow comments to be indented
+  comments-indentation: disable
+
+  # Allow multiple documents in one file
+  document-end: disable

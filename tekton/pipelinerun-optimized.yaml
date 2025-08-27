@@ -1,0 +1,79 @@
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: adb-butler-optimized-$(uid)
+  annotations:
+    description: "Optimized PipelineRun for ADB Butler with parallel execution"
+spec:
+  pipelineRef:
+    name: adb-butler-pipeline-optimized
+
+  # Parameters for optimized build
+  params:
+    - name: git-url
+      value: "https://github.com/nicholashaven/adb-butler.git"
+    - name: git-revision
+      value: "main"
+    - name: image-name
+      value: "adb-butler"
+    - name: image-tag
+      value: "optimized-$(uid)"
+    - name: registry-url
+      value: "docker.io"
+    - name: push-image
+      value: "false"
+    - name: skip-tests
+      value: "false"
+    - name: skip-security-scan
+      value: "false"
+
+  # Optimized workspaces with better storage
+  workspaces:
+    - name: shared-workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi  # Increased for better caching
+          storageClassName: fast-ssd  # Use fast storage if available
+    - name: docker-cache
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi  # Dedicated cache storage
+          storageClassName: fast-ssd
+    - name: test-results
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+          storageClassName: fast-ssd
+
+  # Optimized timeout
+  timeout: 25m
+
+  # Service account for registry access
+  serviceAccountName: docker-registry-sa
+
+  # Pod template for better resource management
+  podTemplate:
+    securityContext:
+      fsGroup: 1000
+      runAsNonRoot: true
+      runAsUser: 1000
+    nodeSelector:
+      node-type: build-node  # Use dedicated build nodes if available
+    tolerations:
+      - key: "build-node"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"

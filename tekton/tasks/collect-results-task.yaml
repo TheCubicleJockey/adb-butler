@@ -1,0 +1,56 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: collect-results
+  annotations:
+    description: "Task to collect and aggregate test results"
+spec:
+  description: |
+    Collects test results from parallel test runs and creates a summary report.
+
+  params:
+    - name: test-results-dir
+      description: "Directory containing test results"
+      default: "test-results"
+    - name: output-format
+      description: "Output format for the report"
+      default: "json"
+
+  workspaces:
+    - name: source
+      description: "Workspace containing test results"
+
+  steps:
+    - name: collect-results
+      image: alpine:3.19
+      script: |
+        #!/usr/bin/env sh
+        set -euo pipefail
+
+        echo "Collecting test results from $(params.test-results-dir)..."
+
+        # Create results directory
+        mkdir -p $(workspaces.source.path)/$(params.test-results-dir)
+
+        # Collect all test results
+        find $(workspaces.source.path) -name "test-result.txt" -exec cat {} \; > \
+          $(workspaces.source.path)/$(params.test-results-dir)/all-results.txt || true
+
+        # Generate summary report
+        cat > $(workspaces.source.path)/$(params.test-results-dir)/summary.json << EOF
+        {
+          "pipeline": "adb-butler-pipeline",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "test_results": {
+            "total_tests": $(find $(workspaces.source.path) -name "test-result.txt" | wc -l),
+            "status": "completed"
+          },
+          "architectures": ["amd64", "arm64"]
+        }
+        EOF
+
+        echo "Test results collected successfully!"
+        echo "Summary: $(cat $(workspaces.source.path)/$(params.test-results-dir)/summary.json)"
+
+      workingDir: $(workspaces.source.path)
