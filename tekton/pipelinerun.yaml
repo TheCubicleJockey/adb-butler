@@ -1,0 +1,50 @@
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: adb-butler-pipelinerun-$(uid)
+  annotations:
+    description: "PipelineRun for ADB Butler build and test"
+spec:
+  pipelineRef:
+    name: adb-butler-pipeline
+
+  # Parameters for the pipeline
+  params:
+    - name: git-url
+      value: "https://github.com/nicholashaven/adb-butler.git"
+    - name: git-revision
+      value: "main"
+    - name: image-name
+      value: "adb-butler"
+    - name: image-tag
+      value: "latest"
+    - name: registry-url
+      value: "docker.io"
+    - name: push-image
+      value: "false"
+
+  # Workspaces
+  workspaces:
+    - name: shared-workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+    - name: docker-cache
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+
+  # Timeout for the entire pipeline
+  timeout: 30m
+
+  # Service account for registry access
+  serviceAccountName: docker-registry-sa

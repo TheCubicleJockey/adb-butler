@@ -1,0 +1,56 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hadolint
+  annotations:
+    description: "Task to lint Dockerfiles using hadolint"
+spec:
+  description: |
+    Lints Dockerfiles using hadolint and outputs results in various formats.
+
+  params:
+    - name: dockerfile
+      description: "Path to the Dockerfile to lint"
+      default: "Dockerfile"
+    - name: format
+      description: >-
+        Output format (text, json, sarif, codeclimate, gitlab_codeclimate,
+        checkstyle, codacy)
+      default: "text"
+    - name: output-file
+      description: "Output file name for the lint results"
+      default: "hadolint-result.txt"
+    - name: fail-threshold
+      description: >-
+        Minimum level for non-zero exit code (error, warning, info, style)
+      default: "warning"
+
+  workspaces:
+    - name: source
+      description: "Source code workspace"
+
+  steps:
+    - name: hadolint
+      image: hadolint/hadolint:latest-alpine
+      script: |
+        #!/usr/bin/env sh
+        set -euo pipefail
+
+        echo "Linting Dockerfile: $(params.dockerfile)"
+
+        # Run hadolint with specified parameters
+        hadolint \
+          --format $(params.format) \
+          --failure-threshold $(params.fail-threshold) \
+          --output $(workspaces.source.path)/$(params.output-file) \
+          $(workspaces.source.path)/$(params.dockerfile)
+
+        echo "Linting completed. Results saved to $(params.output-file)"
+
+        # Display results if format is text
+        if [ "$(params.format)" = "text" ]; then
+          cat $(workspaces.source.path)/$(params.output-file)
+        fi
+
+      workingDir: $(workspaces.source.path)

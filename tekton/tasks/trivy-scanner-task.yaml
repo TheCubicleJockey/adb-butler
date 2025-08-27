@@ -1,0 +1,57 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: trivy-scanner
+  annotations:
+    description: "Task to scan Docker images for vulnerabilities using Trivy"
+spec:
+  description: |
+    Scans Docker images for vulnerabilities and outputs results in various formats.
+
+  params:
+    - name: image
+      description: "Docker image to scan"
+    - name: format
+      description: "Output format (table, json, template, sarif)"
+      default: "table"
+    - name: output
+      description: "Output file name for scan results"
+      default: "trivy-results.txt"
+    - name: severity
+      description: >-
+        Severity levels to include (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)
+      default: "CRITICAL,HIGH"
+    - name: exit-code
+      description: "Exit code when vulnerabilities are found (0 or 1)"
+      default: "0"
+
+  workspaces:
+    - name: source
+      description: "Source workspace to save results"
+
+  steps:
+    - name: trivy-scan
+      image: aquasec/trivy:latest
+      script: |
+        #!/usr/bin/env sh
+        set -euo pipefail
+
+        echo "Scanning Docker image: $(params.image)"
+
+        # Run Trivy scan with specified parameters
+        trivy image \
+          --format $(params.format) \
+          --severity $(params.severity) \
+          --exit-code $(params.exit-code) \
+          --output $(workspaces.source.path)/$(params.output) \
+          $(params.image)
+
+        echo "Security scan completed. Results saved to $(params.output)"
+
+        # Display summary if format is table
+        if [ "$(params.format)" = "table" ]; then
+          cat $(workspaces.source.path)/$(params.output)
+        fi
+
+      workingDir: $(workspaces.source.path)
